@@ -1,0 +1,14 @@
+services:
+  db:
+    image: mysql:8.4
+    container_name: finance-master-mysql
+    environment:
+      MYSQL_DATABASE: finance_master
+      MYSQL_ROOT_PASSWORD: Veysel.12
+      TZ: Europe/Istanbul
+    ports:
+      - "3307:3306"   # host:container
+    volumes:
+      - db_data:/var/lib/mysql
+volumes:
+  db_data:
