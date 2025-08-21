@@ -7,26 +7,32 @@ import (
 	"github.com/Veysel440/finance-master-api/internal/adapters/mysql"
 	"github.com/Veysel440/finance-master-api/internal/config"
 	h "github.com/Veysel440/finance-master-api/internal/http"
-	"github.com/Veysel440/finance-master-api/internal/ports"
 	"github.com/Veysel440/finance-master-api/internal/services"
 )
 
 func main() {
 	cfg := config.Load()
-	_, err := mysql.Open(cfg.DSN)
+	db, err := mysql.Open(cfg.DSN)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// TODO: gerçek repo implementasyonlarını yaz
-	var authRepo ports.AuthRepo
-	var txRepo ports.TxRepo
+	authRepo := mysql.NewAuthRepo(db)
+	txRepo := mysql.NewTxRepo(db)
 
-	authSvc := &services.AuthService{Repo: authRepo, JWTSecret: []byte(cfg.JWTSecret), AccessTTL: cfg.AccessTTL, RefreshTTL: cfg.RefreshTTL}
+	authSvc := &services.AuthService{
+		Repo: authRepo, JWTSecret: []byte(cfg.JWTSecret),
+		AccessTTL: cfg.AccessTTL, RefreshTTL: cfg.RefreshTTL, Issuer: "FinanceMaster",
+	}
 	txSvc := &services.TxService{Repo: txRepo}
-	handlers := &h.Handlers{Auth: authSvc, Tx: txSvc}
 
-	r := h.Router(handlers, []byte(cfg.JWTSecret))
+	api := &h.API{
+		Auth:   &h.AuthHandlers{S: authSvc},
+		H:      &h.Handlers{Auth: authSvc, Tx: txSvc},
+		Secret: []byte(cfg.JWTSecret),
+	}
+
+	r := h.Router(api)
 	log.Println("listening on", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, r))
 }
