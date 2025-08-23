@@ -3,7 +3,9 @@ package http
 import (
 	"context"
 	"net/http"
+	"strings"
 
+	"github.com/Veysel440/finance-master-api/internal/errs"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -18,20 +20,24 @@ func Auth(secret []byte) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			h := r.Header.Get("Authorization")
-			if len(h) < 8 {
-				errJSON(w, 401, "unauthorized")
+			if !strings.HasPrefix(h, "Bearer ") || len(h) <= 7 {
+				WriteAppError(w, errs.Unauthorized)
 				return
 			}
-			tok := h[7:]
+			tok := strings.TrimPrefix(h, "Bearer ")
 			claims := jwt.MapClaims{}
 			_, err := jwt.ParseWithClaims(tok, claims, func(t *jwt.Token) (interface{}, error) { return secret, nil })
 			if err != nil {
-				errJSON(w, 401, "unauthorized")
+				WriteAppError(w, errs.Unauthorized)
+				return
+			}
+			if typ, _ := claims["typ"].(string); typ != "access" {
+				WriteAppError(w, errs.Unauthorized)
 				return
 			}
 			uidF, ok := claims["sub"].(float64)
 			if !ok {
-				errJSON(w, 401, "unauthorized")
+				WriteAppError(w, errs.Unauthorized)
 				return
 			}
 			ctx := context.WithValue(r.Context(), userKey, int64(uidF))
@@ -39,6 +45,7 @@ func Auth(secret []byte) func(http.Handler) http.Handler {
 		})
 	}
 }
+
 func UID(r *http.Request) int64 {
 	v := r.Context().Value(userKey)
 	if v == nil {

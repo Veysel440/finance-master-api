@@ -1,0 +1,69 @@
+name: perf
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  k6-and-bombardier:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: finance_master
+          MYSQL_ROOT_PASSWORD: Veysel.12
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -proot"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      DB_DSN: root:Veysel.12@tcp(127.0.0.1:3306)/finance_master?parseTime=true&loc=Local&charset=utf8mb4&collation=utf8mb4_general_ci
+      ADDR: :8080
+      JWT_SECRET: ci-secret
+      RATES_URL: https://api.exchangerate.host/latest
+      RATES_TTL: 1h
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Wait for MySQL
+        run: |
+          for i in {1..60}; do
+            mysqladmin ping -h 127.0.0.1 -proot >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+      - name: Install goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Run migrations
+        run: goose -dir ./migrations mysql "$DB_DSN" up
+
+      - name: Build API
+        run: go build -o api ./cmd/api
+
+      - name: Start API
+        run: ./api &
+
+      - name: Smoke health
+        run: curl -sf http://127.0.0.1:8080/health
+
+      - name: Setup k6
+        uses: grafana/setup-k6-action@v1
+        with:
+          version: v0.47.0
+
+      - name: k6 smoke
+        run: k6 run perf/k6-smoke.js
+
+      - name: Install bombardier
+        run: go install github.com/codesenberg/bombardier@latest
+
+      - name: bombardier burst
+        run: ~/go/bin/bombardier -c 50 -d 10s http://127.0.0.1:8080/health
