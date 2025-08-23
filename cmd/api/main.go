@@ -43,8 +43,10 @@ func main() {
 	txSvc := &services.TxService{Repo: txRepo, Audit: auditSvc}
 	walletSvc := &services.WalletService{Repo: walletRepo, Audit: auditSvc}
 	catSvc := &services.CategoryService{Repo: catRepo, Audit: auditSvc}
-	ratesFetch := &ratesadp.HTTPClient{BaseURL: cfg.RatesURL, Client: &http.Client{Timeout: 8 * time.Second}}
-	ratesSvc := &services.RatesService{F: ratesFetch, TTL: cfg.RatesTTL}
+
+	ratesFetcher := &ratesadp.HTTPClient{BaseURL: cfg.RatesURL, Client: &http.Client{Timeout: 8 * time.Second}}
+	ratesStore := &ratesadp.FileStore{Path: cfg.RatesCachePath}
+	ratesSvc := &services.RatesService{F: ratesFetcher, Store: ratesStore, TTL: cfg.RatesTTL, StaleTTL: cfg.RatesStaleTTL}
 
 	// handlers
 	api := &h.API{
@@ -55,7 +57,6 @@ func main() {
 		Secret: []byte(cfg.JWTSecret),
 	}
 
-	// serve
 	r := h.Router(api)
 	log.Println("listening on", cfg.Addr)
 	log.Fatal(http.ListenAndServe(cfg.Addr, r))

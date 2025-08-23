@@ -1,18 +1,29 @@
 package services
 
 import (
-	"sync"
 	"time"
 )
 
 type RatesFetcher interface {
 	Latest(base string) (baseOut string, date time.Time, rates map[string]float64, err error)
 }
+type RatesStore interface {
+	Load(base string) (*CacheRecord, error)
+	Save(rec *CacheRecord) error
+}
+type CacheRecord struct {
+	Base    string
+	Date    string
+	Rates   map[string]float64
+	SavedAt time.Time
+}
 
 type RatesService struct {
-	F     RatesFetcher
-	TTL   time.Duration
-	mu    sync.Mutex
+	F        RatesFetcher
+	Store    RatesStore
+	TTL      time.Duration
+	StaleTTL time.Duration
+
 	cache map[string]cached
 }
 type cached struct {
@@ -26,23 +37,29 @@ func (s *RatesService) Latest(base string) (string, time.Time, map[string]float6
 	if base == "" {
 		base = "TRY"
 	}
-	s.mu.Lock()
 	if s.cache == nil {
 		s.cache = map[string]cached{}
 	}
 	if c, ok := s.cache[base]; ok && time.Since(c.at) < s.TTL {
-		s.mu.Unlock()
 		return c.base, c.date, c.rates, nil
 	}
-	s.mu.Unlock()
 
 	b, d, r, err := s.F.Latest(base)
-	if err != nil {
-		return "", time.Time{}, nil, err
+	if err == nil {
+		s.cache[base] = cached{base: b, date: d, rates: r, at: time.Now()}
+		if s.Store != nil {
+			_ = s.Store.Save(&CacheRecord{Base: b, Date: d.Format("2006-01-02"), Rates: r, SavedAt: time.Now()})
+		}
+		return b, d, r, nil
 	}
 
-	s.mu.Lock()
-	s.cache[base] = cached{base: b, date: d, rates: r, at: time.Now()}
-	s.mu.Unlock()
-	return b, d, r, nil
+	if s.Store != nil {
+		if rec, e := s.Store.Load(base); e == nil {
+			dd, _ := time.Parse("2006-01-02", rec.Date)
+			if time.Since(rec.SavedAt) <= s.StaleTTL {
+				return rec.Base, dd, rec.Rates, nil
+			}
+		}
+	}
+	return "", time.Time{}, nil, err
 }
