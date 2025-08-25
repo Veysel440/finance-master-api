@@ -17,10 +17,9 @@ import (
 	"github.com/pressly/goose/v3"
 	tc_mysql "github.com/testcontainers/testcontainers-go/modules/mysql"
 
+	mysqladp "github.com/Veysel440/finance-master-api/internal/adapters/mysql"
 	apihttp "github.com/Veysel440/finance-master-api/internal/http"
 	"github.com/Veysel440/finance-master-api/internal/services"
-	// Adaptörlerin isimleri sende farklıysa aşağıyı güncelle:
-	mysqladp "github.com/Veysel440/finance-master-api/internal/adapters/mysql"
 )
 
 func startMySQL(t *testing.T) (dsn string, terminate func()) {
@@ -47,7 +46,6 @@ func openDB(t *testing.T, dsn string) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	// hazır olana kadar bekle
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if err = db.Ping(); err == nil || time.Now().After(deadline) {
@@ -66,7 +64,7 @@ func migrate(t *testing.T, db *sql.DB) {
 	if err := goose.SetDialect("mysql"); err != nil {
 		t.Fatalf("goose dialect: %v", err)
 	}
-	// Çalışma dizini modül kökü ise "migrations" doğru olur.
+
 	if err := goose.Up(db, "migrations"); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -87,12 +85,10 @@ func TestAuth_Flow_Register_Login_Refresh_Protected(t *testing.T) {
 
 	migrate(t, db)
 
-	// Gerçek repos
 	authRepo := mysqladp.NewAuthRepo(db)
 	walRepo := mysqladp.NewWalletRepo(db)
 	catRepo := mysqladp.NewCategoryRepo(db)
 
-	// Servisler
 	secret := []byte("test-secret")
 	authSvc := &services.AuthService{
 		Repo:       authRepo,
@@ -105,17 +101,15 @@ func TestAuth_Flow_Register_Login_Refresh_Protected(t *testing.T) {
 	}
 	ratesSvc := &services.RatesService{F: dummyRates{}, TTL: time.Minute, StaleTTL: time.Hour}
 
-	// Handler set
 	api := &apihttp.API{
 		Auth:   &apihttp.AuthHandlers{S: authSvc},
-		H:      &apihttp.Handlers{}, // bu testte tx kullanılmıyor
+		H:      &apihttp.Handlers{},
 		CatH:   &apihttp.CatalogHandlers{Wallet: &services.WalletService{Repo: walRepo}, Cat: &services.CategoryService{Repo: catRepo}},
 		Rates:  &apihttp.RatesHandlers{S: ratesSvc},
 		Secret: secret,
 	}
 	r := apihttp.Router(api)
 
-	// 1) Register
 	regBody := []byte(`{"name":"Veysel","email":"v@e.com","password":"A1complex!"}`)
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/auth/register", bytes.NewReader(regBody))
@@ -124,7 +118,6 @@ func TestAuth_Flow_Register_Login_Refresh_Protected(t *testing.T) {
 		t.Fatalf("register status=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// 2) Login
 	loginBody := []byte(`{"email":"v@e.com","password":"A1complex!","deviceId":"dev1","deviceName":"Pixel"}`)
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/auth/login", bytes.NewReader(loginBody))
@@ -144,7 +137,6 @@ func TestAuth_Flow_Register_Login_Refresh_Protected(t *testing.T) {
 		t.Fatalf("login parse: err=%v body=%s", err, w.Body.String())
 	}
 
-	// 3) Protected endpoint: wallets
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/v1/wallets", nil)
 	req.Header.Set("Authorization", "Bearer "+loginResp.Token)
@@ -153,7 +145,6 @@ func TestAuth_Flow_Register_Login_Refresh_Protected(t *testing.T) {
 		t.Fatalf("wallets list status=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// 4) Refresh
 	refBody := []byte(fmt.Sprintf(`{"refresh":"%s"}`, loginResp.Refresh))
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/v1/auth/refresh", bytes.NewReader(refBody))
@@ -169,7 +160,6 @@ func TestAuth_Flow_Register_Login_Refresh_Protected(t *testing.T) {
 		t.Fatalf("refresh parse: err=%v body=%s", err, w.Body.String())
 	}
 
-	// 5) Health (public)
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/health", nil)
 	r.ServeHTTP(w, req)

@@ -9,6 +9,7 @@ type AppError struct {
 }
 
 func (e *AppError) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Message) }
+
 func E(code string, http int, msg string) *AppError {
 	return &AppError{Code: code, HTTP: http, Message: msg}
 }
@@ -24,4 +25,23 @@ var (
 	InvalidRefresh     = E("invalid_refresh", 401, "invalid refresh token")
 	ValidationFailed   = func(msg string) *AppError { return E("validation_failed", 400, msg) }
 	Internal           = E("internal", 500, "internal server error")
+
+	HasTransactions = E("has_transactions", 409, "resource has linked transactions")
+
+	CaptchaRequired = E("captcha_required", 401, "captcha required")
+	SlowDown        = E("slow_down", 429, "too many attempts, slow down")
 )
+
+type RetryAfterError struct {
+	*AppError
+	Seconds int
+}
+
+func (e *RetryAfterError) Error() string { return e.AppError.Error() }
+
+func SlowDownAfter(seconds int) error {
+	if seconds < 1 {
+		seconds = 1
+	}
+	return &RetryAfterError{AppError: SlowDown, Seconds: seconds}
+}

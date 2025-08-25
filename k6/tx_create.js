@@ -8,7 +8,7 @@ export const options = {
 };
 
 const BASE = 'http://localhost:8080';
-const TOKEN = __ENV.AUTH_TOKEN; // k6 run -e AUTH_TOKEN=...
+const TOKEN = __ENV.AUTH_TOKEN;
 
 export default function () {
     const payload = JSON.stringify({

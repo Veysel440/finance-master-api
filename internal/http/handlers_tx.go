@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Veysel440/finance-master-api/internal/errs"
+	imw "github.com/Veysel440/finance-master-api/internal/http/middleware"
 	"github.com/Veysel440/finance-master-api/internal/ports"
 	"github.com/Veysel440/finance-master-api/internal/services"
 	"github.com/Veysel440/finance-master-api/internal/validation"
@@ -78,19 +79,40 @@ func (h *Handlers) TxList(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) TxCreate(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
 	var in txIn
-	if err := DecodeStrict(r, &in); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
-	if err := validation.ValidateStruct(in); err != nil {
-		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
+	if in.Type != "income" && in.Type != "expense" {
+		WriteAppError(w, errs.ValidationFailed("bad type"))
 		return
 	}
-	occ, _ := time.Parse(time.RFC3339, in.OccurredAt)
+	if in.Amount <= 0 {
+		WriteAppError(w, errs.ValidationFailed("bad amount"))
+		return
+	}
+	occ, err := time.Parse(time.RFC3339, in.OccurredAt)
+	if err != nil {
+		WriteAppError(w, errs.ValidationFailed("bad occurredAt"))
+		return
+	}
+	occ = occ.UTC()
+
 	t := ports.Transaction{
 		WalletID: in.WalletID, CategoryID: in.CategoryID, Type: in.Type,
 		Amount: in.Amount, Currency: in.Currency, Note: in.Note, OccurredAt: occ,
 	}
+
+	key := imw.FromContext(r)
+	if key != "" {
+		if err := h.Tx.CreateIdem(uid, key, &t); err != nil {
+			FromError(w, err)
+			return
+		}
+		WriteJSON(w, 201, t)
+		return
+	}
+
 	if err := h.Tx.Create(uid, &t); err != nil {
 		FromError(w, err)
 		return

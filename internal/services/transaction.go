@@ -9,6 +9,29 @@ import (
 type TxService struct {
 	Repo  ports.TxRepo
 	Audit *AuditService
+	Idem  ports.IdempotencyRepo
+}
+
+func (s *TxService) CreateIdem(uid int64, key string, t *ports.Transaction) error {
+	if s.Idem != nil && key != "" {
+		if rid, ok, err := s.Idem.Get(uid, key, "transaction"); err == nil && ok {
+			exist, err := s.Repo.GetOne(uid, rid)
+			if err == nil && exist != nil {
+				*t = *exist
+				return nil
+			}
+		}
+	}
+	if err := s.Repo.Create(uid, t); err != nil {
+		return err
+	}
+	if s.Idem != nil && key != "" {
+		_ = s.Idem.Save(uid, key, "transaction", t.ID)
+	}
+	if s.Audit != nil {
+		s.Audit.Log(uid, "tx.create", "transaction", &t.ID, map[string]any{"amount": t.Amount, "currency": t.Currency, "type": t.Type})
+	}
+	return nil
 }
 
 func (s *TxService) Create(uid int64, t *ports.Transaction) error {

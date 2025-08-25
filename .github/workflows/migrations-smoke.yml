@@ -1,0 +1,51 @@
+name: Migrations Smoke
+
+on:
+  push:
+    paths:
+      - 'migrations/**'
+      - '.github/workflows/migrations-smoke.yml'
+  pull_request:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: finance_master
+          MYSQL_ROOT_PASSWORD: root
+          TZ: Europe/Istanbul
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Wait for DB
+        run: |
+          for i in {1..60}; do
+            mysqladmin ping -h127.0.0.1 -uroot -proot && break
+            sleep 2
+          done
+
+      - name: Run migrations
+        env:
+          MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/finance_master?parseTime=true&multiStatements=true
+        run: goose -dir ./migrations mysql "$MYSQL_DSN" up
+
+      - name: Smoke check schema
+        env:
+          MYSQL_DSN: root:root@tcp(127.0.0.1:3306)/finance_master?parseTime=true&multiStatements=true
+        run: go run ./cmd/migrate-smoke

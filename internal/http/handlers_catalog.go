@@ -3,6 +3,7 @@ package http
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/Veysel440/finance-master-api/internal/errs"
 	"github.com/Veysel440/finance-master-api/internal/ports"
@@ -28,7 +29,7 @@ func (h *CatalogHandlers) WalletList(w http.ResponseWriter, r *http.Request) {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 200, rows)
+	WriteJSON(w, http.StatusOK, rows)
 }
 
 func (h *CatalogHandlers) WalletCreate(w http.ResponseWriter, r *http.Request) {
@@ -46,7 +47,7 @@ func (h *CatalogHandlers) WalletCreate(w http.ResponseWriter, r *http.Request) {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 201, wal)
+	WriteJSON(w, http.StatusCreated, wal)
 }
 
 func (h *CatalogHandlers) WalletUpdate(w http.ResponseWriter, r *http.Request) {
@@ -65,16 +66,20 @@ func (h *CatalogHandlers) WalletUpdate(w http.ResponseWriter, r *http.Request) {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 200, wal)
+	WriteJSON(w, http.StatusOK, wal)
 }
 
 func (h *CatalogHandlers) WalletDelete(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err := h.Wallet.Delete(UID(r), id); err != nil {
+		if err == errs.HasTransactions {
+			WriteAppError(w, errs.HasTransactions)
+			return
+		}
 		FromError(w, err)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 /* Categories */
@@ -84,13 +89,13 @@ type catReq struct {
 }
 
 func (h *CatalogHandlers) CategoryList(w http.ResponseWriter, r *http.Request) {
-	typ := r.URL.Query().Get("type")
+	typ := strings.TrimSpace(r.URL.Query().Get("type"))
 	rows, err := h.Cat.List(UID(r), typ)
 	if err != nil {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 200, rows)
+	WriteJSON(w, http.StatusOK, rows)
 }
 
 func (h *CatalogHandlers) CategoryCreate(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +113,7 @@ func (h *CatalogHandlers) CategoryCreate(w http.ResponseWriter, r *http.Request)
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 201, c)
+	WriteJSON(w, http.StatusCreated, c)
 }
 
 func (h *CatalogHandlers) CategoryUpdate(w http.ResponseWriter, r *http.Request) {
@@ -127,14 +132,18 @@ func (h *CatalogHandlers) CategoryUpdate(w http.ResponseWriter, r *http.Request)
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 200, c)
+	WriteJSON(w, http.StatusOK, c)
 }
 
 func (h *CatalogHandlers) CategoryDelete(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	if err := h.Cat.Delete(UID(r), id); err != nil {
+		if err == errs.HasTransactions {
+			WriteAppError(w, errs.HasTransactions)
+			return
+		}
 		FromError(w, err)
 		return
 	}
-	w.WriteHeader(204)
+	w.WriteHeader(http.StatusNoContent)
 }

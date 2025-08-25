@@ -12,8 +12,14 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
+/* Opsiyonel CAPTCHA doğrulayıcı */
+type CaptchaVerifier interface {
+	Verify(token, ip, ua string) bool
+}
+
 type AuthService struct {
 	Repo       ports.AuthRepo
+	Sess       ports.SessionRepo
 	JWTSecret  []byte
 	AccessTTL  time.Duration
 	RefreshTTL time.Duration
@@ -21,18 +27,44 @@ type AuthService struct {
 	Onboard    *OnboardService
 	Audit      *AuditService
 
-	// UA/IP binding ve brute-force guard
+	// UA/IP binding ve brute-force koruması
 	BindRefreshToUA bool
 	BindRefreshToIP bool
 
-	MaxLoginFailures int           // örn 10
-	LockFor          time.Duration // örn 15m
-	FailWindow       time.Duration // örn 10m
+	MaxLoginFailures int           // kilit eşiği
+	LockFor          time.Duration // kilit süresi
+	FailWindow       time.Duration // deneme penceresi
 
-	// Repo yoksa in-memory yedek (tek süreç için)
+	BackoffBase      time.Duration // exponential backoff başlangıç
+	BackoffCap       time.Duration // backoff üst sınır
+	CaptchaThreshold int           // şu kadar ardışık fail → captcha
+	Captcha          CaptchaVerifier
+
+	// in-memory fallback
 	mu      sync.Mutex
 	failMem map[string][]time.Time // key=email|ip
-	lockMem map[int64]time.Time    // userID -> until
+	lockMem map[int64]time.Time    // userID → until
+}
+
+func (s *AuthService) defaults() {
+	if s.MaxLoginFailures == 0 {
+		s.MaxLoginFailures = 10
+	}
+	if s.LockFor == 0 {
+		s.LockFor = 15 * time.Minute
+	}
+	if s.FailWindow == 0 {
+		s.FailWindow = 10 * time.Minute
+	}
+	if s.BackoffBase == 0 {
+		s.BackoffBase = 2 * time.Second
+	}
+	if s.BackoffCap == 0 {
+		s.BackoffCap = 60 * time.Second
+	}
+	if s.CaptchaThreshold == 0 {
+		s.CaptchaThreshold = 5
+	}
 }
 
 func (s *AuthService) Register(name, email, pass string) (int64, error) {
@@ -43,12 +75,10 @@ func (s *AuthService) Register(name, email, pass string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-
 	u := &ports.User{Name: name, Email: email, PassHash: hash}
 	if err := s.Repo.CreateUser(u); err != nil {
 		return 0, err
 	}
-
 	if s.Onboard != nil {
 		_ = s.Onboard.Seed(u.ID)
 	}
@@ -58,40 +88,45 @@ func (s *AuthService) Register(name, email, pass string) (int64, error) {
 	return u.ID, nil
 }
 
-func (s *AuthService) Login(email, pass, deviceID, deviceName, totpCode, ua, ip string) (access, refresh string, userID int64, err error) {
+func (s *AuthService) Login(email, pass, deviceID, deviceName, totpCode, ua, ip, captcha string) (access, refresh string, userID int64, err error) {
+	s.defaults()
+
 	u, err := s.Repo.FindUserByEmail(email)
 	if err != nil {
-		_ = s.bumpFail(0, email, ip)
-		return "", "", 0, errs.InvalidCredentials
+		_, fails := s.bumpFail(0, email, ip)
+		return "", "", 0, s.backoffOrInvalid(fails)
 	}
-	// Hesap kilidi
+
 	if until := s.getLock(u.ID); until != nil && time.Now().Before(*until) {
 		return "", "", 0, errs.AccountLocked
 	}
 
+	if s.CaptchaThreshold > 0 && s.needCaptcha(email, ip) {
+		if s.Captcha == nil || !s.Captcha.Verify(captcha, ip, ua) {
+			return "", "", 0, errs.CaptchaRequired
+		}
+	}
+
 	ok, _ := security.ArgonCheck(pass, u.PassHash)
 	if !ok {
-		if s.bumpFail(u.ID, email, ip) {
+		locked, fails := s.bumpFail(u.ID, email, ip)
+		if locked {
 			return "", "", 0, errs.AccountLocked
 		}
-		return "", "", 0, errs.InvalidCredentials
+		return "", "", 0, s.backoffOrInvalid(fails)
 	}
 
-	// TOTP
 	if ts, _ := s.Repo.GetTotp(u.ID); ts != nil && ts.ConfirmedAt != nil {
-		if totpCode == "" {
-			_ = s.bumpFail(u.ID, email, ip)
-			return "", "", 0, errs.TOTPRequired
-		}
-		if !totp.Validate(totpCode, ts.Secret) {
-			if s.bumpFail(u.ID, email, ip) {
+		if totpCode == "" || !totp.Validate(totpCode, ts.Secret) {
+			locked, fails := s.bumpFail(u.ID, email, ip)
+			if locked {
 				return "", "", 0, errs.AccountLocked
 			}
-			return "", "", 0, errs.TOTPInvalid
+			return "", "", 0, s.backoffOrInvalid(fails)
 		}
 	}
 
-	// Başarılı giriş → sayaç reset
+	// başarılı giriş
 	s.resetFail(email, ip)
 	if s.Audit != nil {
 		s.Audit.Log(u.ID, "auth.login", "user", &u.ID, map[string]any{"deviceId": deviceID, "deviceName": deviceName, "ip": ip})
@@ -108,14 +143,18 @@ func (s *AuthService) Login(email, pass, deviceID, deviceName, totpCode, ua, ip 
 
 	now := time.Now()
 	hash := security.SHA256Hex(refresh)
-	if sr, ok := s.Repo.(ports.SessionRepo); ok {
-		_ = sr.StoreRefreshMeta(u.ID, hash, ua, ip, now.Add(s.RefreshTTL), now)
+	exp := now.Add(s.RefreshTTL)
+
+	if s.Sess != nil {
+		_ = s.Sess.StoreRefreshMeta(u.ID, hash, ua, ip, exp, now)
 	} else {
-		_ = s.Repo.StoreRefresh(u.ID, hash, now.Add(s.RefreshTTL))
+		_ = s.Repo.StoreRefresh(u.ID, hash, exp)
 	}
+
 	if deviceID != "" {
 		_ = s.Repo.UpsertDevice(u.ID, deviceID, deviceName, now)
 	}
+
 	return access, refresh, u.ID, nil
 }
 
@@ -134,20 +173,15 @@ func (s *AuthService) Refresh(userID int64, oldRefresh, ua, ip string) (newAcces
 
 	now := time.Now()
 	hash := security.SHA256Hex(oldRefresh)
+
 	valid := false
-	if sr, ok := s.Repo.(ports.SessionRepo); ok {
-		valid, err = sr.ValidateRefresh(userID, hash, ua, ip, now, s.BindRefreshToUA, s.BindRefreshToIP)
-		if err != nil {
-			return "", "", errs.InvalidRefresh
-		}
-		if !valid {
-			return "", "", errs.SessionMismatch
-		}
+	if s.Sess != nil {
+		valid, err = s.Sess.ValidateRefresh(userID, hash, ua, ip, now, s.BindRefreshToUA, s.BindRefreshToIP)
 	} else {
 		valid, err = s.Repo.HasValidRefresh(userID, hash, now)
-		if err != nil || !valid {
-			return "", "", errs.InvalidRefresh
-		}
+	}
+	if err != nil || !valid {
+		return "", "", errs.InvalidRefresh
 	}
 
 	newAccess, err = security.SignAccess(s.JWTSecret, userID, s.AccessTTL)
@@ -161,8 +195,9 @@ func (s *AuthService) Refresh(userID int64, oldRefresh, ua, ip string) (newAcces
 
 	newHash := security.SHA256Hex(newRefresh)
 	exp := now.Add(s.RefreshTTL)
-	if sr, ok := s.Repo.(ports.SessionRepo); ok {
-		err = sr.RotateRefreshMeta(userID, hash, newHash, ua, ip, exp, now)
+
+	if s.Sess != nil {
+		err = s.Sess.RotateRefreshMeta(userID, hash, newHash, ua, ip, exp, now)
 	} else {
 		err = s.Repo.RotateRefresh(userID, hash, newHash, exp)
 	}
@@ -180,7 +215,9 @@ func (s *AuthService) Logout(userID int64, refresh string) error {
 }
 
 func (s *AuthService) TotpSetup(userID int64, email string) (secret, otpauth string, err error) {
-	key, err := totp.Generate(totp.GenerateOpts{Issuer: s.Issuer, AccountName: email, Period: 30, Digits: otp.DigitsSix})
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer: s.Issuer, AccountName: email, Period: 30, Digits: otp.DigitsSix,
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -208,50 +245,80 @@ func (s *AuthService) TotpConfirm(userID int64, code string) error {
 	return s.Repo.ConfirmTotp(userID)
 }
 
-// Oturum görünürlüğü
+/* ---- Oturum listesi / iptali ---- */
+
 func (s *AuthService) Sessions(userID int64) ([]ports.Session, error) {
-	if sr, ok := s.Repo.(ports.SessionRepo); ok {
-		return sr.ListSessions(userID)
+	if s.Sess == nil {
+		return nil, errs.Forbidden
 	}
-	return []ports.Session{}, nil
-}
-func (s *AuthService) RevokeSession(userID, sessionID int64) error {
-	if sr, ok := s.Repo.(ports.SessionRepo); ok {
-		return sr.InvalidateSession(userID, sessionID)
-	}
-	return errs.NotFound
+	return s.Sess.ListSessions(userID)
 }
 
-/* ---------- brute-force helper ---------- */
+func (s *AuthService) RevokeSession(userID, sid int64) error {
+	if s.Sess == nil {
+		return errs.Forbidden
+	}
+	return s.Sess.RevokeSession(userID, sid)
+}
 
-func (s *AuthService) bumpFail(userID int64, email, ip string) (locked bool) {
+/* ---- brute-force yardımcıları ---- */
+
+func (s *AuthService) needCaptcha(email, ip string) bool {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failMem == nil {
+		return false
+	}
+	cut := now.Add(-s.FailWindow)
+	key := email + "|" + ip
+	arr := s.failMem[key]
+	n := 0
+	for _, t := range arr {
+		if t.After(cut) {
+			n++
+		}
+	}
+	return n >= s.CaptchaThreshold
+}
+
+func (s *AuthService) backoffOrInvalid(fails int) error {
+	if fails <= 1 {
+		return errs.InvalidCredentials
+	}
+	wait := s.BackoffBase
+	steps := fails - 1
+	for steps > 0 && wait < s.BackoffCap {
+		wait *= 2
+		steps--
+		if wait > s.BackoffCap {
+			wait = s.BackoffCap
+			break
+		}
+	}
+	return errs.SlowDownAfter(int(wait.Seconds()))
+}
+
+func (s *AuthService) bumpFail(userID int64, email, ip string) (locked bool, fails int) {
 	now := time.Now()
 	window := s.FailWindow
-	if window == 0 {
-		window = 10 * time.Minute
-	}
 	max := s.MaxLoginFailures
-	if max == 0 {
-		max = 10
-	}
 	lock := s.LockFor
-	if lock == 0 {
-		lock = 15 * time.Minute
-	}
 
+	// Kalıcı guard varsa onu kullan
 	if lg, ok := s.Repo.(ports.LoginGuardRepo); ok {
 		fc, until, _ := lg.IncLoginFail(email, ip, now, window)
 		if until != nil && now.Before(*until) {
-			return true
+			return true, fc
 		}
 		if fc >= max {
 			_ = lg.LockUser(userID, now.Add(lock))
-			return true
+			return true, fc
 		}
-		return false
+		return false, fc
 	}
 
-	// in-memory fallback
+	// In-memory fallback
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failMem == nil {
@@ -263,22 +330,24 @@ func (s *AuthService) bumpFail(userID int64, email, ip string) (locked bool) {
 
 	key := email + "|" + ip
 	arr := append(s.failMem[key], now)
-	// window dışındakileri at
+	cut := now.Add(-window)
 	trim := arr[:0]
 	for _, t := range arr {
-		if now.Sub(t) <= window {
+		if t.After(cut) {
 			trim = append(trim, t)
 		}
 	}
 	s.failMem[key] = trim
-	if len(trim) >= max {
+	fc := len(trim)
+
+	if fc >= max {
 		s.lockMem[userID] = now.Add(lock)
-		return true
+		return true, fc
 	}
 	if until, ok := s.lockMem[userID]; ok && now.Before(until) {
-		return true
+		return true, fc
 	}
-	return false
+	return false, fc
 }
 
 func (s *AuthService) resetFail(email, ip string) {
@@ -295,10 +364,8 @@ func (s *AuthService) resetFail(email, ip string) {
 
 func (s *AuthService) getLock(userID int64) *time.Time {
 	if lg, ok := s.Repo.(ports.LoginGuardRepo); ok {
-		if until, _ := lg.GetUserLock(userID); until != nil {
-			return until
-		}
-		return nil
+		until, _ := lg.GetUserLock(userID)
+		return until
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
