@@ -1,39 +1,49 @@
 package http
 
 import (
-	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/Veysel440/finance-master-api/internal/errs"
 	"github.com/Veysel440/finance-master-api/internal/security"
 	"github.com/Veysel440/finance-master-api/internal/services"
+	"github.com/Veysel440/finance-master-api/internal/validation"
+	"github.com/go-chi/chi/v5"
 )
 
 type AuthHandlers struct{ S *services.AuthService }
 
-type reqRegister struct{ Name, Email, Password string }
+type reqRegister struct {
+	Name     string `json:"name"     validate:"required,min=2,max=100"`
+	Email    string `json:"email"    validate:"required,email,max=320"`
+	Password string `json:"password" validate:"required,min=10,max=256"`
+}
 type reqLogin struct {
-	Email      string `json:"email"`
-	Password   string `json:"password"`
-	Totp       string `json:"totp,omitempty"`
-	DeviceID   string `json:"deviceId,omitempty"`
-	DeviceName string `json:"deviceName,omitempty"`
+	Email      string `json:"email"      validate:"required,email,max=320"`
+	Password   string `json:"password"   validate:"required,min=6,max=256"`
+	Totp       string `json:"totp,omitempty"        validate:"omitempty,len=6,numeric"`
+	DeviceID   string `json:"deviceId,omitempty"    validate:"omitempty,max=128"`
+	DeviceName string `json:"deviceName,omitempty"  validate:"omitempty,max=128"`
 }
 type reqRefresh struct {
-	Refresh string `json:"refresh"`
+	Refresh string `json:"refresh" validate:"required,min=10"`
 }
 type reqTotpConfirm struct {
-	Code string `json:"code"`
+	Code string `json:"code" validate:"required,len=6,numeric"`
 }
 
 func (h *AuthHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	var in reqRegister
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
-	if in.Email == "" || in.Password == "" {
-		WriteAppError(w, errs.ValidationFailed("email and password required"))
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
+		return
+	}
+	if err := validation.ValidatePassword(in.Password, in.Email); err != nil {
+		WriteAppError(w, errs.ValidationFailed("weak_password"))
 		return
 	}
 	uid, err := h.S.Register(in.Name, in.Email, in.Password)
@@ -49,11 +59,16 @@ func (h *AuthHandlers) Register(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
 	var in reqLogin
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
-	access, refresh, uid, err := h.S.Login(in.Email, in.Password, in.DeviceID, in.DeviceName, in.Totp)
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
+		return
+	}
+	ua, ip := clientUA(r), clientIP(r)
+	access, refresh, uid, err := h.S.Login(in.Email, in.Password, in.DeviceID, in.DeviceName, in.Totp, ua, ip)
 	if err != nil {
 		FromError(w, err)
 		return
@@ -66,7 +81,7 @@ func (h *AuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandlers) Refresh(w http.ResponseWriter, r *http.Request) {
 	var in reqRefresh
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
@@ -80,9 +95,8 @@ func (h *AuthHandlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		WriteAppError(w, errs.InvalidRefresh)
 		return
 	}
-	uid := int64(sub)
-
-	a, r2, err := h.S.Refresh(uid, in.Refresh)
+	ua, ip := clientUA(r), clientIP(r)
+	a, r2, err := h.S.Refresh(int64(sub), in.Refresh, ua, ip)
 	if err != nil {
 		FromError(w, err)
 		return
@@ -92,7 +106,7 @@ func (h *AuthHandlers) Refresh(w http.ResponseWriter, r *http.Request) {
 
 func (h *AuthHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	var in reqRefresh
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
@@ -117,7 +131,7 @@ func (h *AuthHandlers) TotpSetup(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandlers) TotpConfirm(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
 	var in reqTotpConfirm
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
@@ -126,4 +140,24 @@ func (h *AuthHandlers) TotpConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// ---- Oturum görünürlüğü / yönetimi ----
+
+func (h *AuthHandlers) Sessions(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.S.Sessions(UID(r))
+	if err != nil {
+		FromError(w, err)
+		return
+	}
+	WriteJSON(w, 200, rows)
+}
+
+func (h *AuthHandlers) SessionDelete(w http.ResponseWriter, r *http.Request) {
+	sid, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err := h.S.RevokeSession(UID(r), sid); err != nil {
+		FromError(w, err)
+		return
+	}
+	w.WriteHeader(204)
 }

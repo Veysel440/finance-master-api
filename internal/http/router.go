@@ -2,64 +2,131 @@ package http
 
 import (
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/Veysel440/finance-master-api/internal/errs"
+	imw "github.com/Veysel440/finance-master-api/internal/http/middleware"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/go-chi/httprate"
 )
 
+func corsFromEnv() func(http.Handler) http.Handler {
+	origins := strings.TrimSpace(os.Getenv("CORS_ORIGINS"))
+	if origins == "" || origins == "*" {
+		return cors.New(cors.Options{
+
+			AllowedOrigins:   []string{"*"},
+			AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Requested-With"},
+			ExposedHeaders:   []string{"Link"},
+			AllowCredentials: false,
+			MaxAge:           300,
+		}).Handler
+	}
+
+	allowed := []string{}
+	for _, s := range strings.Split(origins, ",") {
+		if v := strings.TrimSpace(s); v != "" {
+			allowed = append(allowed, v)
+		}
+	}
+	return cors.New(cors.Options{
+		AllowedOrigins:   allowed,
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Requested-With"},
+		ExposedHeaders:   []string{"Link"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}).Handler
+}
+
 func Router(api *API) http.Handler {
 	r := chi.NewRouter()
-	r.Use(cors.AllowAll().Handler)
-	r.Use(Common())
-	r.Use(httprate.LimitByIP(200, time.Minute))
 
-	// 404 / 405 JSON
+	r.Use(corsFromEnv())
+
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(Common())
+	r.Use(imw.BodyLimit(1 << 20))
+	r.Use(httprate.LimitByIP(300, time.Minute))
+
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) { WriteAppError(w, errs.NotFound) })
 	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
-		Fail(w, 405, "method_not_allowed", "method not allowed")
+		Fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		WriteJSON(w, 200, map[string]string{"status": "ok"})
+		WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
 	r.Route("/v1", func(r chi.Router) {
-		r.Post("/auth/register", api.Auth.Register)
-		r.Post("/auth/login", api.Auth.Login)
-		r.Post("/auth/refresh", api.Auth.Refresh)
+		r.With(httprate.LimitByIP(20, time.Minute)).
+			Post("/auth/register", api.Auth.Register)
+		r.With(httprate.LimitByIP(10, time.Minute)).
+			Post("/auth/login", api.Auth.Login)
+		r.With(httprate.LimitByIP(30, time.Minute)).
+			Post("/auth/refresh", api.Auth.Refresh)
 
 		r.Group(func(pr chi.Router) {
 			pr.Use(Auth(api.Secret))
 
-			pr.Post("/auth/logout", api.Auth.Logout)
-			pr.Post("/auth/totp/setup", api.Auth.TotpSetup)
-			pr.Post("/auth/totp/confirm", api.Auth.TotpConfirm)
+			pr.With(httprate.LimitByIP(30, time.Minute)).
+				Post("/auth/logout", api.Auth.Logout)
+			pr.With(httprate.LimitByIP(10, time.Minute)).
+				Post("/auth/totp/setup", api.Auth.TotpSetup)
+			pr.With(httprate.LimitByIP(10, time.Minute)).
+				Post("/auth/totp/confirm", api.Auth.TotpConfirm)
 
-			pr.Get("/rates/latest", api.Rates.Latest)
+			pr.With(httprate.LimitByIP(60, time.Minute)).
+				Get("/auth/sessions", api.Auth.Sessions)
+			pr.With(httprate.LimitByIP(30, time.Minute)).
+				Delete("/auth/sessions/{id}", api.Auth.SessionDelete)
 
-			pr.Get("/transactions", api.H.TxList)
-			pr.Get("/transactions/{id}", api.H.TxGetOne)
-			pr.Post("/transactions", api.H.TxCreate)
-			pr.Put("/transactions/{id}", api.H.TxUpdate)
-			pr.Delete("/transactions/{id}", api.H.TxDelete)
-			pr.Get("/transactions/summary", api.H.TxSummary)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Get("/rates/latest", api.Rates.Latest)
 
-			pr.Get("/sync/transactions", api.H.TxSince)
-			pr.Post("/sync/transactions", api.H.TxUpsertBatch)
+			pr.With(httprate.LimitByIP(240, time.Minute)).
+				Get("/transactions", api.H.TxList)
+			pr.With(httprate.LimitByIP(240, time.Minute)).
+				Get("/transactions/{id}", api.H.TxGetOne)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Post("/transactions", api.H.TxCreate)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Put("/transactions/{id}", api.H.TxUpdate)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Delete("/transactions/{id}", api.H.TxDelete)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Get("/transactions/summary", api.H.TxSummary)
 
-			pr.Get("/wallets", api.CatH.WalletList)
-			pr.Post("/wallets", api.CatH.WalletCreate)
-			pr.Put("/wallets/{id}", api.CatH.WalletUpdate)
-			pr.Delete("/wallets/{id}", api.CatH.WalletDelete)
+			pr.With(httprate.LimitByIP(240, time.Minute)).
+				Get("/sync/transactions", api.H.TxSince)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Post("/sync/transactions", api.H.TxUpsertBatch)
 
-			pr.Get("/categories", api.CatH.CategoryList)
-			pr.Post("/categories", api.CatH.CategoryCreate)
-			pr.Put("/categories/{id}", api.CatH.CategoryUpdate)
-			pr.Delete("/categories/{id}", api.CatH.CategoryDelete)
+			pr.With(httprate.LimitByIP(240, time.Minute)).
+				Get("/wallets", api.CatH.WalletList)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Post("/wallets", api.CatH.WalletCreate)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Put("/wallets/{id}", api.CatH.WalletUpdate)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Delete("/wallets/{id}", api.CatH.WalletDelete)
+
+			pr.With(httprate.LimitByIP(240, time.Minute)).
+				Get("/categories", api.CatH.CategoryList)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Post("/categories", api.CatH.CategoryCreate)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Put("/categories/{id}", api.CatH.CategoryUpdate)
+			pr.With(httprate.LimitByIP(120, time.Minute)).
+				Delete("/categories/{id}", api.CatH.CategoryDelete)
 		})
 	})
+
 	return r
 }

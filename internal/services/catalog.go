@@ -26,10 +26,13 @@ func (s *WalletService) Create(uid int64, w *ports.Wallet) error {
 		return err
 	}
 	if s.Audit != nil {
-		s.Audit.Log(uid, "wallet.create", "wallet", &w.ID, map[string]any{"name": w.Name, "currency": w.Currency})
+		s.Audit.Log(uid, "wallet.create", "wallet", &w.ID, map[string]any{
+			"name": w.Name, "currency": w.Currency,
+		})
 	}
 	return nil
 }
+
 func (s *WalletService) Update(uid int64, w *ports.Wallet) error {
 	w.Name = strings.TrimSpace(w.Name)
 	if w.Name == "" {
@@ -42,10 +45,13 @@ func (s *WalletService) Update(uid int64, w *ports.Wallet) error {
 		return err
 	}
 	if s.Audit != nil {
-		s.Audit.Log(uid, "wallet.update", "wallet", &w.ID, map[string]any{"name": w.Name, "currency": w.Currency})
+		s.Audit.Log(uid, "wallet.update", "wallet", &w.ID, map[string]any{
+			"name": w.Name, "currency": w.Currency,
+		})
 	}
 	return nil
 }
+
 func (s *WalletService) Delete(uid, id int64) error {
 	if err := s.Repo.Delete(uid, id); err != nil {
 		return err
@@ -64,6 +70,7 @@ type CategoryService struct {
 func (s *CategoryService) List(uid int64, typ string) ([]ports.Category, error) {
 	return s.Repo.List(uid, typ)
 }
+
 func (s *CategoryService) Create(uid int64, c *ports.Category) error {
 	c.Name = strings.TrimSpace(c.Name)
 	if c.Name == "" {
@@ -76,10 +83,13 @@ func (s *CategoryService) Create(uid int64, c *ports.Category) error {
 		return err
 	}
 	if s.Audit != nil {
-		s.Audit.Log(uid, "category.create", "category", &c.ID, map[string]any{"name": c.Name, "type": c.Type})
+		s.Audit.Log(uid, "category.create", "category", &c.ID, map[string]any{
+			"name": c.Name, "type": c.Type,
+		})
 	}
 	return nil
 }
+
 func (s *CategoryService) Update(uid int64, c *ports.Category) error {
 	if c.ID == 0 {
 		return errors.New("id_required")
@@ -95,10 +105,13 @@ func (s *CategoryService) Update(uid int64, c *ports.Category) error {
 		return err
 	}
 	if s.Audit != nil {
-		s.Audit.Log(uid, "category.update", "category", &c.ID, map[string]any{"name": c.Name, "type": c.Type})
+		s.Audit.Log(uid, "category.update", "category", &c.ID, map[string]any{
+			"name": c.Name, "type": c.Type,
+		})
 	}
 	return nil
 }
+
 func (s *CategoryService) Delete(uid, id int64) error {
 	if err := s.Repo.Delete(uid, id); err != nil {
 		return err

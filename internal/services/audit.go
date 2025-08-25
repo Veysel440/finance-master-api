@@ -12,10 +12,11 @@ func (a *AuditService) Log(uid int64, action, entity string, entityID *int64, de
 	if a == nil || a.Repo == nil {
 		return
 	}
-	var d string
+	var payload string
 	if details != nil {
-		b, _ := json.Marshal(details)
-		d = string(b)
+		if b, err := json.Marshal(details); err == nil {
+			payload = string(b)
+		}
 	}
-	_ = a.Repo.Insert(uid, action, entity, entityID, d)
+	_ = a.Repo.Insert(uid, action, entity, entityID, payload)
 }

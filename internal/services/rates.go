@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,8 @@ func (s *RatesService) Latest(base string) (string, time.Time, map[string]float6
 	if base == "" {
 		base = "TRY"
 	}
+	base = strings.ToUpper(base)
+
 	if s.cache == nil {
 		s.cache = map[string]cached{}
 	}
@@ -46,7 +49,7 @@ func (s *RatesService) Latest(base string) (string, time.Time, map[string]float6
 
 	b, d, r, err := s.F.Latest(base)
 	if err == nil {
-		s.cache[base] = cached{base: b, date: d, rates: r, at: time.Now()}
+		s.cache[b] = cached{base: b, date: d, rates: r, at: time.Now()}
 		if s.Store != nil {
 			_ = s.Store.Save(&CacheRecord{Base: b, Date: d.Format("2006-01-02"), Rates: r, SavedAt: time.Now()})
 		}
@@ -54,7 +57,7 @@ func (s *RatesService) Latest(base string) (string, time.Time, map[string]float6
 	}
 
 	if s.Store != nil {
-		if rec, e := s.Store.Load(base); e == nil {
+		if rec, e := s.Store.Load(base); e == nil && rec != nil {
 			dd, _ := time.Parse("2006-01-02", rec.Date)
 			if time.Since(rec.SavedAt) <= s.StaleTTL {
 				return rec.Base, dd, rec.Rates, nil

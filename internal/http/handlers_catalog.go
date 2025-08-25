@@ -1,13 +1,13 @@
 package http
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
 	"github.com/Veysel440/finance-master-api/internal/errs"
 	"github.com/Veysel440/finance-master-api/internal/ports"
 	"github.com/Veysel440/finance-master-api/internal/services"
+	"github.com/Veysel440/finance-master-api/internal/validation"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -18,8 +18,8 @@ type CatalogHandlers struct {
 
 /* Wallets */
 type walletReq struct {
-	Name     string `json:"name"`
-	Currency string `json:"currency"`
+	Name     string `json:"name"     validate:"required,min=1,max=100"`
+	Currency string `json:"currency" validate:"required,currency"`
 }
 
 func (h *CatalogHandlers) WalletList(w http.ResponseWriter, r *http.Request) {
@@ -33,14 +33,17 @@ func (h *CatalogHandlers) WalletList(w http.ResponseWriter, r *http.Request) {
 
 func (h *CatalogHandlers) WalletCreate(w http.ResponseWriter, r *http.Request) {
 	var in walletReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
+		return
+	}
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
 	wal := ports.Wallet{Name: in.Name, Currency: in.Currency}
 	if err := h.Wallet.Create(UID(r), &wal); err != nil {
-		// basit doğrulama hataları 400
-		WriteAppError(w, errs.ValidationFailed(err.Error()))
+		FromError(w, err)
 		return
 	}
 	WriteJSON(w, 201, wal)
@@ -48,14 +51,18 @@ func (h *CatalogHandlers) WalletCreate(w http.ResponseWriter, r *http.Request) {
 
 func (h *CatalogHandlers) WalletUpdate(w http.ResponseWriter, r *http.Request) {
 	var in walletReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
+		return
+	}
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	wal := ports.Wallet{ID: id, Name: in.Name, Currency: in.Currency}
 	if err := h.Wallet.Update(UID(r), &wal); err != nil {
-		WriteAppError(w, errs.ValidationFailed(err.Error()))
+		FromError(w, err)
 		return
 	}
 	WriteJSON(w, 200, wal)
@@ -72,8 +79,8 @@ func (h *CatalogHandlers) WalletDelete(w http.ResponseWriter, r *http.Request) {
 
 /* Categories */
 type catReq struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name string `json:"name" validate:"required,min=1,max=100"`
+	Type string `json:"type" validate:"required,txtype"`
 }
 
 func (h *CatalogHandlers) CategoryList(w http.ResponseWriter, r *http.Request) {
@@ -88,13 +95,17 @@ func (h *CatalogHandlers) CategoryList(w http.ResponseWriter, r *http.Request) {
 
 func (h *CatalogHandlers) CategoryCreate(w http.ResponseWriter, r *http.Request) {
 	var in catReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
+		return
+	}
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
 	c := ports.Category{Name: in.Name, Type: in.Type}
 	if err := h.Cat.Create(UID(r), &c); err != nil {
-		WriteAppError(w, errs.ValidationFailed(err.Error()))
+		FromError(w, err)
 		return
 	}
 	WriteJSON(w, 201, c)
@@ -102,14 +113,18 @@ func (h *CatalogHandlers) CategoryCreate(w http.ResponseWriter, r *http.Request)
 
 func (h *CatalogHandlers) CategoryUpdate(w http.ResponseWriter, r *http.Request) {
 	var in catReq
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
+		return
+	}
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	c := ports.Category{ID: id, Name: in.Name, Type: in.Type}
 	if err := h.Cat.Update(UID(r), &c); err != nil {
-		WriteAppError(w, errs.ValidationFailed(err.Error()))
+		FromError(w, err)
 		return
 	}
 	WriteJSON(w, 200, c)

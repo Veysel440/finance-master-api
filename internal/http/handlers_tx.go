@@ -9,6 +9,7 @@ import (
 	"github.com/Veysel440/finance-master-api/internal/errs"
 	"github.com/Veysel440/finance-master-api/internal/ports"
 	"github.com/Veysel440/finance-master-api/internal/services"
+	"github.com/Veysel440/finance-master-api/internal/validation"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -18,25 +19,30 @@ type Handlers struct {
 }
 
 type txIn struct {
-	Type       string  `json:"type"`
-	Amount     float64 `json:"amount"`
-	Currency   string  `json:"currency"`
-	CategoryID int64   `json:"categoryId"`
-	WalletID   int64   `json:"walletId"`
-	Note       *string `json:"note"`
-	OccurredAt string  `json:"occurredAt"` // ISO
+	Type       string  `json:"type"       validate:"required,txtype"`
+	Amount     float64 `json:"amount"     validate:"required,gt=0"`
+	Currency   string  `json:"currency"   validate:"required,currency"`
+	CategoryID int64   `json:"categoryId" validate:"required,gt=0"`
+	WalletID   int64   `json:"walletId"   validate:"required,gt=0"`
+	Note       *string `json:"note"       validate:"omitempty,max=1000"`
+	OccurredAt string  `json:"occurredAt" validate:"required,datetime=2006-01-02T15:04:05Z07:00"`
+}
+
+func clampPage(r *http.Request) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+	return page, size
 }
 
 func (h *Handlers) TxList(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
-	if size < 1 {
-		size = 20
-	}
+	page, size := clampPage(r)
 	q := r.URL.Query().Get("q")
 	f := r.URL.Query().Get("from")
 	t := r.URL.Query().Get("to")
@@ -72,24 +78,15 @@ func (h *Handlers) TxList(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) TxCreate(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
 	var in txIn
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
-	if in.Type != "income" && in.Type != "expense" {
-		WriteAppError(w, errs.ValidationFailed("bad type"))
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
-	if in.Amount <= 0 {
-		WriteAppError(w, errs.ValidationFailed("bad amount"))
-		return
-	}
-	occ, err := time.Parse(time.RFC3339, in.OccurredAt)
-	if err != nil {
-		WriteAppError(w, errs.ValidationFailed("bad occurredAt"))
-		return
-	}
-
+	occ, _ := time.Parse(time.RFC3339, in.OccurredAt)
 	t := ports.Transaction{
 		WalletID: in.WalletID, CategoryID: in.CategoryID, Type: in.Type,
 		Amount: in.Amount, Currency: in.Currency, Note: in.Note, OccurredAt: occ,
@@ -105,15 +102,15 @@ func (h *Handlers) TxUpdate(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	var in txIn
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+	if err := DecodeStrict(r, &in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
-	occ, err := time.Parse(time.RFC3339, in.OccurredAt)
-	if err != nil {
-		WriteAppError(w, errs.ValidationFailed("bad occurredAt"))
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
+	occ, _ := time.Parse(time.RFC3339, in.OccurredAt)
 	t := ports.Transaction{
 		ID: id, WalletID: in.WalletID, CategoryID: in.CategoryID, Type: in.Type,
 		Amount: in.Amount, Currency: in.Currency, Note: in.Note, OccurredAt: occ,
@@ -156,6 +153,10 @@ func (h *Handlers) TxUpsertBatch(w http.ResponseWriter, r *http.Request) {
 	var items []ports.Transaction
 	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
+		return
+	}
+	if len(items) > 500 {
+		Fail(w, 413, "payload_too_large", "max 500 items")
 		return
 	}
 	if err := h.Tx.UpsertBatch(uid, items); err != nil {
