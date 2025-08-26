@@ -9,6 +9,7 @@
     <file url="file://$PROJECT_DIR$/migrations/20250824_add_rates_cache.sql" dialect="MySQL" />
     <file url="file://$PROJECT_DIR$/migrations/20250825_add_idempotency.sql" dialect="MySQL" />
     <file url="file://$PROJECT_DIR$/migrations/20250825_fk_and_audit.sql" dialect="MySQL" />
+    <file url="file://$PROJECT_DIR$/migrations/20250826_add_session_rotations.sql" dialect="MySQL" />
     <file url="file://$PROJECT_DIR$/migrations/20250826_add_sessions.sql" dialect="MySQL" />
   </component>
 </project>

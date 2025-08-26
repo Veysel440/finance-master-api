@@ -1,60 +1,57 @@
 package validation
 
 import (
-	"fmt"
 	"regexp"
-	"strings"
+	"time"
+	"unicode"
 
 	"github.com/go-playground/validator/v10"
 )
 
-var (
-	V            *validator.Validate
-	rxCurrency   = regexp.MustCompile(`^[A-Z]{3}$`)
-	allowedTypes = map[string]struct{}{"income": {}, "expense": {}}
-)
+var v = validator.New()
 
-func init() {
-	V = validator.New(validator.WithRequiredStructEnabled())
-	_ = V.RegisterValidation("currency", func(fl validator.FieldLevel) bool {
-		s, _ := fl.Field().Interface().(string)
-		return s == "" || rxCurrency.MatchString(s)
-	})
-	_ = V.RegisterValidation("txtype", func(fl validator.FieldLevel) bool {
-		s := strings.ToLower(fl.Field().String())
-		_, ok := allowedTypes[s]
-		return ok
-	})
+// currency: 3 harf ISO
+var reCurrency = regexp.MustCompile(`^[A-Z]{3}$`)
+
+func noCtrl(fl validator.FieldLevel) bool {
+	s, _ := fl.Field().Interface().(string)
+	for _, r := range s {
+		if unicode.IsControl(r) && r != '\n' && r != '\r' && r != '\t' {
+			return false
+		}
+	}
+	return true
+}
+func txType(fl validator.FieldLevel) bool {
+	s, _ := fl.Field().Interface().(string)
+	return s == "income" || s == "expense"
+}
+func isCurrency(fl validator.FieldLevel) bool {
+	s, _ := fl.Field().Interface().(string)
+	return reCurrency.MatchString(s)
+}
+func iso8601(fl validator.FieldLevel) bool {
+	s, _ := fl.Field().Interface().(string)
+	_, err := time.Parse(time.RFC3339, s)
+	return err == nil
 }
 
-func ValidateStruct(s any) error { return V.Struct(s) }
+func init() {
+	_ = v.RegisterValidation("noctrl", noCtrl)
+	_ = v.RegisterValidation("txtype", txType)
+	_ = v.RegisterValidation("currency", isCurrency)
+	_ = v.RegisterValidation("iso8601", iso8601)
+}
+
+func ValidateStruct(s any) error { return v.Struct(s) }
 
 func ValidationMessage(err error) string {
 	if err == nil {
 		return ""
 	}
-	ves, ok := err.(validator.ValidationErrors)
-	if !ok {
-		return err.Error()
+	if ve, ok := err.(validator.ValidationErrors); ok && len(ve) > 0 {
+		f := ve[0]
+		return f.Field() + ":" + f.Tag()
 	}
-	parts := make([]string, 0, len(ves))
-	for _, fe := range ves {
-		switch fe.Tag() {
-		case "required":
-			parts = append(parts, fmt.Sprintf("%s is required", fe.Field()))
-		case "email":
-			parts = append(parts, "invalid email")
-		case "currency":
-			parts = append(parts, "invalid currency")
-		case "txtype":
-			parts = append(parts, "type must be income|expense")
-		case "max":
-			parts = append(parts, fmt.Sprintf("%s too long", fe.Field()))
-		case "min":
-			parts = append(parts, fmt.Sprintf("%s too short", fe.Field()))
-		default:
-			parts = append(parts, fmt.Sprintf("%s invalid", fe.Field()))
-		}
-	}
-	return strings.Join(parts, "; ")
+	return err.Error()
 }

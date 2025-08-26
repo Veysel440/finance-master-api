@@ -1,0 +1,49 @@
+openapi: 3.0.3
+info:
+  title: Finance Master API
+  version: 1.0
+paths:
+  /v1/auth/sessions:
+    get:
+      summary: List sessions
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+    delete:
+      summary: Revoke a session
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '204': { description: No Content }
+components:
+  schemas:
+    Session:
+      type: object
+      properties:
+        id:        { type: integer }
+        userId:    { type: integer }
+        ua:        { type: string }
+        ip:        { type: string }
+        createdAt: { type: string, format: date-time }
+        lastSeen:  { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }

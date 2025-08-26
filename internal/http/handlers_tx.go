@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Veysel440/finance-master-api/internal/errs"
-	imw "github.com/Veysel440/finance-master-api/internal/http/middleware"
 	"github.com/Veysel440/finance-master-api/internal/ports"
 	"github.com/Veysel440/finance-master-api/internal/services"
 	"github.com/Veysel440/finance-master-api/internal/validation"
@@ -25,25 +24,20 @@ type txIn struct {
 	Currency   string  `json:"currency"   validate:"required,currency"`
 	CategoryID int64   `json:"categoryId" validate:"required,gt=0"`
 	WalletID   int64   `json:"walletId"   validate:"required,gt=0"`
-	Note       *string `json:"note"       validate:"omitempty,max=1000"`
-	OccurredAt string  `json:"occurredAt" validate:"required,datetime=2006-01-02T15:04:05Z07:00"`
-}
-
-func clampPage(r *http.Request) (int, int) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 100 {
-		size = 20
-	}
-	return page, size
+	Note       *string `json:"note"       validate:"omitempty,noctrl,max=500"`
+	OccurredAt string  `json:"occurredAt" validate:"required,iso8601"` // ISO
 }
 
 func (h *Handlers) TxList(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
-	page, size := clampPage(r)
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if size < 1 || size > 200 {
+		size = 20
+	}
 	q := r.URL.Query().Get("q")
 	f := r.URL.Query().Get("from")
 	t := r.URL.Query().Get("to")
@@ -64,16 +58,15 @@ func (h *Handlers) TxList(w http.ResponseWriter, r *http.Request) {
 			FromError(w, err)
 			return
 		}
-		WriteJSON(w, 200, map[string]any{"total": total, "data": items})
+		WriteJSON(w, http.StatusOK, map[string]any{"total": total, "data": items})
 		return
 	}
-
 	items, total, err := h.Tx.List(uid, page, size, q)
 	if err != nil {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 200, map[string]any{"total": total, "data": items})
+	WriteJSON(w, http.StatusOK, map[string]any{"total": total, "data": items})
 }
 
 func (h *Handlers) TxCreate(w http.ResponseWriter, r *http.Request) {
@@ -83,48 +76,27 @@ func (h *Handlers) TxCreate(w http.ResponseWriter, r *http.Request) {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
-	if in.Type != "income" && in.Type != "expense" {
-		WriteAppError(w, errs.ValidationFailed("bad type"))
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
 		return
 	}
-	if in.Amount <= 0 {
-		WriteAppError(w, errs.ValidationFailed("bad amount"))
-		return
-	}
-	occ, err := time.Parse(time.RFC3339, in.OccurredAt)
-	if err != nil {
-		WriteAppError(w, errs.ValidationFailed("bad occurredAt"))
-		return
-	}
-	occ = occ.UTC()
-
+	occ, _ := time.Parse(time.RFC3339, in.OccurredAt)
 	t := ports.Transaction{
 		WalletID: in.WalletID, CategoryID: in.CategoryID, Type: in.Type,
 		Amount: in.Amount, Currency: in.Currency, Note: in.Note, OccurredAt: occ,
 	}
-
-	key := imw.FromContext(r)
-	if key != "" {
-		if err := h.Tx.CreateIdem(uid, key, &t); err != nil {
-			FromError(w, err)
-			return
-		}
-		WriteJSON(w, 201, t)
-		return
-	}
-
 	if err := h.Tx.Create(uid, &t); err != nil {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 201, t)
+	WriteJSON(w, http.StatusCreated, t)
 }
 
 func (h *Handlers) TxUpdate(w http.ResponseWriter, r *http.Request) {
 	uid := UID(r)
 	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
 	var in txIn
-	if err := DecodeStrict(r, &in); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
@@ -141,7 +113,19 @@ func (h *Handlers) TxUpdate(w http.ResponseWriter, r *http.Request) {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, 200, t)
+	WriteJSON(w, http.StatusOK, t)
+}
+
+func clampPage(r *http.Request) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 100 {
+		size = 20
+	}
+	return page, size
 }
 
 func (h *Handlers) TxDelete(w http.ResponseWriter, r *http.Request) {

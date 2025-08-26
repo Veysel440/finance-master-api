@@ -1,8 +1,8 @@
 -- +goose Up
 CREATE TABLE IF NOT EXISTS sessions (
                                         id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-                                        user_id      BIGINT      NOT NULL,
-                                        refresh_hash CHAR(64)    NOT NULL UNIQUE,
+                                        user_id      BIGINT       NOT NULL,
+                                        refresh_hash CHAR(64)     NOT NULL UNIQUE,
                                         ua           VARCHAR(255) NOT NULL,
                                         ip           VARCHAR(64)  NOT NULL,
                                         created_at   DATETIME     NOT NULL,

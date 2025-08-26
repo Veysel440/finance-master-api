@@ -1,7 +1,6 @@
 package http
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 
@@ -40,7 +39,7 @@ type reqTotpConfirm struct {
 func (h *AuthHandlers) Register(w http.ResponseWriter, r *http.Request) {
 	var in reqRegister
 	if err := DecodeStrict(r, &in); err != nil {
-		Fail(w, http.StatusBadRequest, "bad_request", "invalid json")
+		Fail(w, 400, "bad_request", "invalid json")
 		return
 	}
 	if err := validation.ValidateStruct(in); err != nil {
@@ -51,43 +50,8 @@ func (h *AuthHandlers) Register(w http.ResponseWriter, r *http.Request) {
 		WriteAppError(w, errs.ValidationFailed("weak_password"))
 		return
 	}
-	uid, err := h.S.Register(in.Name, in.Email, in.Password)
-	if err != nil {
-		FromError(w, err)
-		return
-	}
-	WriteJSON(w, http.StatusCreated, map[string]any{
-		"status": "ok",
-		"user":   map[string]any{"id": uid, "name": in.Name, "email": in.Email},
-	})
-}
-
-func (h *AuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
-	var in reqLogin
-	if err := DecodeStrict(r, &in); err != nil {
-		Fail(w, http.StatusBadRequest, "bad_request", "invalid json")
-		return
-	}
-	if err := validation.ValidateStruct(in); err != nil {
-		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
-		return
-	}
-	ua, ip := clientUA(r), clientIP(r)
-	access, refresh, uid, err := h.S.Login(in.Email, in.Password, in.DeviceID, in.DeviceName, in.Totp, ua, ip, in.Captcha)
-	if err != nil {
-		var ra *errs.RetryAfterError
-		if errors.As(err, &ra) {
-			w.Header().Set("Retry-After", strconv.Itoa(ra.Seconds))
-			WriteAppError(w, ra.AppError)
-			return
-		}
-		FromError(w, err)
-		return
-	}
-	WriteJSON(w, http.StatusOK, map[string]any{
-		"token": access, "refresh": refresh,
-		"user": map[string]any{"id": uid, "email": in.Email},
-	})
+	_, _ = h.S.Register(in.Name, in.Email, in.Password)
+	WriteJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
 func (h *AuthHandlers) Refresh(w http.ResponseWriter, r *http.Request) {
@@ -154,13 +118,45 @@ func (h *AuthHandlers) TotpConfirm(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *AuthHandlers) Sessions(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.S.Sessions(UID(r))
+func (h *AuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
+	var in reqLogin
+	if err := DecodeStrict(r, &in); err != nil {
+		Fail(w, http.StatusBadRequest, "bad_request", "invalid json")
+		return
+	}
+	if err := validation.ValidateStruct(in); err != nil {
+		WriteAppError(w, errs.ValidationFailed(validation.ValidationMessage(err)))
+		return
+	}
+	ua, ip := clientUA(r), clientIP(r)
+	access, refresh, uid, err := h.S.Login(in.Email, in.Password, in.DeviceID, in.DeviceName, in.Totp, ua, ip, in.Captcha)
 	if err != nil {
 		FromError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, rows)
+	WriteJSON(w, http.StatusOK, map[string]any{
+		"token": access, "refresh": refresh,
+		"user": map[string]any{"id": uid, "email": in.Email},
+	})
+}
+
+/* ---- Oturum görünürlüğü / yönetimi ---- */
+
+func (h *AuthHandlers) Sessions(w http.ResponseWriter, r *http.Request) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
+	if size < 1 {
+		size = 20
+	}
+	rows, total, err := h.S.Sessions(UID(r), page, size)
+	if err != nil {
+		FromError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"total": total, "data": rows})
 }
 
 func (h *AuthHandlers) SessionDelete(w http.ResponseWriter, r *http.Request) {

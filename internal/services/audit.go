@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 
+	"github.com/Veysel440/finance-master-api/internal/obs"
 	"github.com/Veysel440/finance-master-api/internal/ports"
 )
 
@@ -12,11 +13,11 @@ func (a *AuditService) Log(uid int64, action, entity string, entityID *int64, de
 	if a == nil || a.Repo == nil {
 		return
 	}
-	var payload string
+	var d string
 	if details != nil {
-		if b, err := json.Marshal(details); err == nil {
-			payload = string(b)
-		}
+		safe := obs.MaskPIIMap(details)
+		b, _ := json.Marshal(safe)
+		d = string(b)
 	}
-	_ = a.Repo.Insert(uid, action, entity, entityID, payload)
+	_ = a.Repo.Insert(uid, action, entity, entityID, d)
 }

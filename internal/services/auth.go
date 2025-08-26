@@ -12,7 +12,6 @@ import (
 	"github.com/pquerna/otp/totp"
 )
 
-/* Opsiyonel CAPTCHA doğrulayıcı */
 type CaptchaVerifier interface {
 	Verify(token, ip, ua string) bool
 }
@@ -27,23 +26,21 @@ type AuthService struct {
 	Onboard    *OnboardService
 	Audit      *AuditService
 
-	// UA/IP binding ve brute-force koruması
 	BindRefreshToUA bool
 	BindRefreshToIP bool
 
-	MaxLoginFailures int           // kilit eşiği
-	LockFor          time.Duration // kilit süresi
-	FailWindow       time.Duration // deneme penceresi
+	MaxLoginFailures int
+	LockFor          time.Duration
+	FailWindow       time.Duration
 
-	BackoffBase      time.Duration // exponential backoff başlangıç
-	BackoffCap       time.Duration // backoff üst sınır
-	CaptchaThreshold int           // şu kadar ardışık fail → captcha
+	BackoffBase      time.Duration
+	BackoffCap       time.Duration
+	CaptchaThreshold int
 	Captcha          CaptchaVerifier
 
-	// in-memory fallback
 	mu      sync.Mutex
-	failMem map[string][]time.Time // key=email|ip
-	lockMem map[int64]time.Time    // userID → until
+	failMem map[string][]time.Time
+	lockMem map[int64]time.Time
 }
 
 func (s *AuthService) defaults() {
@@ -94,7 +91,7 @@ func (s *AuthService) Login(email, pass, deviceID, deviceName, totpCode, ua, ip,
 	u, err := s.Repo.FindUserByEmail(email)
 	if err != nil {
 		_, fails := s.bumpFail(0, email, ip)
-		return "", "", 0, s.backoffOrInvalid(fails)
+		return "", "", 0, s.backoffOrAuthFailed(fails)
 	}
 
 	if until := s.getLock(u.ID); until != nil && time.Now().Before(*until) {
@@ -113,7 +110,7 @@ func (s *AuthService) Login(email, pass, deviceID, deviceName, totpCode, ua, ip,
 		if locked {
 			return "", "", 0, errs.AccountLocked
 		}
-		return "", "", 0, s.backoffOrInvalid(fails)
+		return "", "", 0, s.backoffOrAuthFailed(fails)
 	}
 
 	if ts, _ := s.Repo.GetTotp(u.ID); ts != nil && ts.ConfirmedAt != nil {
@@ -122,11 +119,10 @@ func (s *AuthService) Login(email, pass, deviceID, deviceName, totpCode, ua, ip,
 			if locked {
 				return "", "", 0, errs.AccountLocked
 			}
-			return "", "", 0, s.backoffOrInvalid(fails)
+			return "", "", 0, s.backoffOrAuthFailed(fails)
 		}
 	}
 
-	// başarılı giriş
 	s.resetFail(email, ip)
 	if s.Audit != nil {
 		s.Audit.Log(u.ID, "auth.login", "user", &u.ID, map[string]any{"deviceId": deviceID, "deviceName": deviceName, "ip": ip})
@@ -245,13 +241,11 @@ func (s *AuthService) TotpConfirm(userID int64, code string) error {
 	return s.Repo.ConfirmTotp(userID)
 }
 
-/* ---- Oturum listesi / iptali ---- */
-
-func (s *AuthService) Sessions(userID int64) ([]ports.Session, error) {
+func (s *AuthService) Sessions(userID int64, page, size int) ([]ports.Session, int, error) {
 	if s.Sess == nil {
-		return nil, errs.Forbidden
+		return nil, 0, errs.Forbidden
 	}
-	return s.Sess.ListSessions(userID)
+	return s.Sess.ListSessions(userID, page, size)
 }
 
 func (s *AuthService) RevokeSession(userID, sid int64) error {
@@ -282,9 +276,9 @@ func (s *AuthService) needCaptcha(email, ip string) bool {
 	return n >= s.CaptchaThreshold
 }
 
-func (s *AuthService) backoffOrInvalid(fails int) error {
+func (s *AuthService) backoffOrAuthFailed(fails int) error {
 	if fails <= 1 {
-		return errs.InvalidCredentials
+		return errs.AuthFailed
 	}
 	wait := s.BackoffBase
 	steps := fails - 1
@@ -305,7 +299,6 @@ func (s *AuthService) bumpFail(userID int64, email, ip string) (locked bool, fai
 	max := s.MaxLoginFailures
 	lock := s.LockFor
 
-	// Kalıcı guard varsa onu kullan
 	if lg, ok := s.Repo.(ports.LoginGuardRepo); ok {
 		fc, until, _ := lg.IncLoginFail(email, ip, now, window)
 		if until != nil && now.Before(*until) {
@@ -318,7 +311,6 @@ func (s *AuthService) bumpFail(userID int64, email, ip string) (locked bool, fai
 		return false, fc
 	}
 
-	// In-memory fallback
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failMem == nil {

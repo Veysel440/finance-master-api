@@ -13,83 +13,69 @@ type TxRepo struct{ db *sqlx.DB }
 func NewTxRepo(db *sqlx.DB) *TxRepo { return &TxRepo{db: db} }
 
 func (r *TxRepo) List(userID int64, page, size int, q string) ([]ports.Transaction, int, error) {
-	if size <= 0 {
-		size = 20
-	}
-	if page <= 0 {
-		page = 1
-	}
 	off := (page - 1) * size
-
+	baseQ := `
+SELECT SQL_CALC_FOUND_ROWS id,user_id,wallet_id,category_id,type,amount,currency,note,occurred_at,updated_at
+FROM transactions
+WHERE user_id=? AND deleted_at IS NULL`
 	args := []any{userID}
-	where := `WHERE t.user_id=? AND t.deleted_at IS NULL`
 
 	if s := strings.TrimSpace(q); s != "" {
-		if strings.HasPrefix(s, "ft:") {
-			q = strings.TrimSpace(strings.TrimPrefix(s, "ft:"))
-			where += ` AND MATCH(t.note) AGAINST (? IN NATURAL LANGUAGE MODE)`
-			args = append(args, q)
+		if strings.HasPrefix(strings.ToLower(s), "ft:") {
+			term := strings.TrimSpace(s[3:])
+			if term != "" {
+				baseQ += ` AND MATCH(note) AGAINST (? IN NATURAL LANGUAGE MODE)`
+				args = append(args, term)
+			}
 		} else {
-			where += ` AND (t.note LIKE ?)`
+			baseQ += ` AND note LIKE ?`
 			args = append(args, "%"+s+"%")
 		}
 	}
 
-	var total int
-	if err := r.db.Get(&total, `SELECT COUNT(*) FROM transactions t `+where, args...); err != nil {
+	baseQ += ` ORDER BY occurred_at DESC LIMIT ? OFFSET ?`
+	args = append(args, size, off)
+
+	var rows []ports.Transaction
+	if err := r.db.Select(&rows, baseQ, args...); err != nil {
 		return nil, 0, err
 	}
-
-	args2 := append(args, size, off)
-	rows := []ports.Transaction{}
-	err := r.db.Select(&rows, `
-		SELECT id, user_id, wallet_id, category_id, type, amount, currency, note,
-		       occurred_at, updated_at, deleted_at
-		FROM transactions t
-		`+where+`
-		ORDER BY occurred_at DESC, id DESC
-		LIMIT ? OFFSET ?`, args2...)
-	return rows, total, err
+	var total int
+	_ = r.db.Get(&total, `SELECT FOUND_ROWS()`)
+	return rows, total, nil
 }
 
 func (r *TxRepo) ListRange(userID int64, from, to time.Time, q string, page, size int) ([]ports.Transaction, int, error) {
-	if size <= 0 {
-		size = 500
-	}
-	if page <= 0 {
-		page = 1
-	}
 	off := (page - 1) * size
-
+	baseQ := `
+SELECT SQL_CALC_FOUND_ROWS id,user_id,wallet_id,category_id,type,amount,currency,note,occurred_at,updated_at
+FROM transactions
+WHERE user_id=? AND deleted_at IS NULL AND occurred_at BETWEEN ? AND ?`
 	args := []any{userID, from, to}
-	where := `WHERE t.user_id=? AND t.deleted_at IS NULL AND t.occurred_at >= ? AND t.occurred_at < ?`
 
 	if s := strings.TrimSpace(q); s != "" {
-		if strings.HasPrefix(s, "ft:") {
-			q = strings.TrimSpace(strings.TrimPrefix(s, "ft:"))
-			where += ` AND MATCH(t.note) AGAINST (? IN NATURAL LANGUAGE MODE)`
-			args = append(args, q)
+		if strings.HasPrefix(strings.ToLower(s), "ft:") {
+			term := strings.TrimSpace(s[3:])
+			if term != "" {
+				baseQ += ` AND MATCH(note) AGAINST (? IN NATURAL LANGUAGE MODE)`
+				args = append(args, term)
+			}
 		} else {
-			where += ` AND (t.note LIKE ?)`
+			baseQ += ` AND note LIKE ?`
 			args = append(args, "%"+s+"%")
 		}
 	}
 
-	var total int
-	if err := r.db.Get(&total, `SELECT COUNT(*) FROM transactions t `+where, args...); err != nil {
+	baseQ += ` ORDER BY occurred_at DESC LIMIT ? OFFSET ?`
+	args = append(args, size, off)
+
+	var rows []ports.Transaction
+	if err := r.db.Select(&rows, baseQ, args...); err != nil {
 		return nil, 0, err
 	}
-
-	args2 := append(args, size, off)
-	rows := []ports.Transaction{}
-	err := r.db.Select(&rows, `
-		SELECT id, user_id, wallet_id, category_id, type, amount, currency, note,
-		       occurred_at, updated_at, deleted_at
-		FROM transactions t
-		`+where+`
-		ORDER BY occurred_at ASC, id ASC
-		LIMIT ? OFFSET ?`, args2...)
-	return rows, total, err
+	var total int
+	_ = r.db.Get(&total, `SELECT FOUND_ROWS()`)
+	return rows, total, nil
 }
 
 func (r *TxRepo) GetSince(userID int64, since time.Time) ([]ports.Transaction, error) {
